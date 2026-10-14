@@ -1,12 +1,11 @@
 export default {
   async fetch(request, env, ctx) {
-    // 1. Fetch Order Book kutoka Coinbase API (Level 2)
-    const apiUrl = "https://api.exchange.coinbase.com/products/DOGE-USD/book?level=2";
+    const now = Math.floor(Date.now() / 1000);
 
     try {
-      // Kuunda table yenye muundo unaofanana 100%
+      // 1. KUTENGENEZA TABLES MBILI KWENYE D1 DATABASE KAMA HAZIPO
       await env.DB.prepare(`
-        CREATE TABLE IF NOT EXISTS active_orders (
+        CREATE TABLE IF NOT EXISTS active_orders_okx (
             price REAL PRIMARY KEY,
             side TEXT,
             amount REAL,
@@ -16,101 +15,144 @@ export default {
         )
       `).run();
 
-      const response = await fetch(apiUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (PHP-Coinbase-Tracker)',
-          'Accept': 'application/json'
-        }
-      });
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS active_orders_coinbase (
+            price REAL PRIMARY KEY,
+            side TEXT,
+            amount REAL,
+            value REAL,
+            first_seen INTEGER,
+            last_seen INTEGER
+        )
+      `).run();
 
-      if (!response.ok) {
-        return new Response(JSON.stringify({ status: "error", message: "Failed to fetch Coinbase API data" }), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-        });
-      }
+      // 2. KUVUTA DATA KUTOKA OKX NA COINBASE KWA WAKATI MMOJA
+      const okxUrl = "https://www.okx.com/api/v5/market/books-full?instId=DOGE-USDT-SWAP&sz=5000";
+      const coinbaseUrl = "https://api.exchange.coinbase.com/products/DOGE-USD/book?level=2";
 
-      const data = await response.json();
-
-      if (!data.bids || !data.asks) {
-        return new Response(JSON.stringify({ status: "error", message: "Invalid JSON structure from Coinbase" }), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-        });
-      }
+      const [okxRes, coinbaseRes] = await Promise.all([
+        fetch(okxUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Accept': 'application/json' } }),
+        fetch(coinbaseUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (PHP-Coinbase-Tracker)', 'Accept': 'application/json' } })
+      ]);
 
       const MIN_USD_VALUE = 300000; // Filter ya $300K+
-      const LIMIT_PER_SIDE = 5000;  // LIMIT YA ODA 5000 TU KWA COINBASE
+      const LIMIT_PER_SIDE = 5000;  // LIMIT YA ODA 5000
 
-      const rawBids = data.bids || [];
-      const rawAsks = data.asks || [];
+      // --- PROCESS OKX DATA ---
+      if (okxRes.ok) {
+        const okxData = await okxRes.json();
+        if (okxData.code === '0' && okxData.data && okxData.data[0]) {
+          const bookData = okxData.data[0];
+          const rawBids = bookData.bids || [];
+          const rawAsks = bookData.asks || [];
 
-      // 2. KUWEKA LIMIT YA ODA 5000 ZA KARIBU ZAIDI
-      rawBids.sort((a, b) => parseFloat(b[0]) - parseFloat(a[0]));
-      const limitedBids = rawBids.slice(0, LIMIT_PER_SIDE);
+          rawBids.sort((a, b) => parseFloat(b[0]) - parseFloat(a[0]));
+          rawAsks.sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
 
-      rawAsks.sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
-      const limitedAsks = rawAsks.slice(0, LIMIT_PER_SIDE);
+          const limitedBids = rawBids.slice(0, LIMIT_PER_SIDE);
+          const limitedAsks = rawAsks.slice(0, LIMIT_PER_SIDE);
+          const currentPricesOkx = [];
+          const rawLargeOrdersOkx = {};
+          const CONTRACT_SIZE = 1000; // Mkataba 1 wa DOGE-USDT-SWAP OKX = 1000 DOGE
 
-      const now = Math.floor(Date.now() / 1000);
-      const currentPrices = [];
-      const rawLargeOrders = {};
+          for (const bid of limitedBids) {
+            const price = parseFloat(bid[0]);
+            const amount = parseFloat(bid[1]) * CONTRACT_SIZE;
+            const usdValue = price * amount;
+            if (usdValue >= MIN_USD_VALUE) {
+              currentPricesOkx.push(price);
+              rawLargeOrdersOkx[price.toString()] = { side: 'bid', price, amount, value: usdValue };
+            }
+          }
 
-      // Kuchuja Bids zilizofikisha $300K+
-      for (const bid of limitedBids) {
-        const price = parseFloat(bid[0]);
-        const amount = parseFloat(bid[1]);
-        const usdValue = price * amount;
+          for (const ask of limitedAsks) {
+            const price = parseFloat(ask[0]);
+            const amount = parseFloat(ask[1]) * CONTRACT_SIZE;
+            const usdValue = price * amount;
+            if (usdValue >= MIN_USD_VALUE) {
+              currentPricesOkx.push(price);
+              rawLargeOrdersOkx[price.toString()] = { side: 'ask', price, amount, value: usdValue };
+            }
+          }
 
-        if (usdValue >= MIN_USD_VALUE) {
-          currentPrices.push(price);
-          rawLargeOrders[price.toString()] = {
-            side: 'bid',
-            price: price,
-            amount: amount,
-            value: usdValue
-          };
+          if (currentPricesOkx.length > 0) {
+            const placeholders = currentPricesOkx.map(() => '?').join(',');
+            await env.DB.prepare(`DELETE FROM active_orders_okx WHERE price NOT IN (${placeholders})`).bind(...currentPricesOkx).run();
+          } else {
+            await env.DB.prepare(`DELETE FROM active_orders_okx`).run();
+          }
+
+          for (const priceStr in rawLargeOrdersOkx) {
+            const order = rawLargeOrdersOkx[priceStr];
+            const priceFloat = parseFloat(priceStr);
+            const existing = await env.DB.prepare(`SELECT first_seen FROM active_orders_okx WHERE price = ?`).bind(priceFloat).first();
+            const firstSeen = existing ? existing.first_seen : now;
+
+            await env.DB.prepare(`
+              INSERT OR REPLACE INTO active_orders_okx (price, side, amount, value, first_seen, last_seen) 
+              VALUES (?, ?, ?, ?, ?, ?)
+            `).bind(priceFloat, order.side, order.amount, order.value, firstSeen, now).run();
+          }
         }
       }
 
-      // Kuchuja Asks zilizofikisha $300K+
-      for (const ask of limitedAsks) {
-        const price = parseFloat(ask[0]);
-        const amount = parseFloat(ask[1]);
-        const usdValue = price * amount;
+      // --- PROCESS COINBASE DATA ---
+      if (coinbaseRes.ok) {
+        const coinbaseData = await coinbaseRes.json();
+        if (coinbaseData.bids && coinbaseData.asks) {
+          const rawBids = coinbaseData.bids || [];
+          const rawAsks = coinbaseData.asks || [];
 
-        if (usdValue >= MIN_USD_VALUE) {
-          currentPrices.push(price);
-          rawLargeOrders[price.toString()] = {
-            side: 'ask',
-            price: price,
-            amount: amount,
-            value: usdValue
-          };
+          rawBids.sort((a, b) => parseFloat(b[0]) - parseFloat(a[0]));
+          rawAsks.sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
+
+          const limitedBids = rawBids.slice(0, LIMIT_PER_SIDE);
+          const limitedAsks = rawAsks.slice(0, LIMIT_PER_SIDE);
+          const currentPricesCoinbase = [];
+          const rawLargeOrdersCoinbase = {};
+
+          for (const bid of limitedBids) {
+            const price = parseFloat(bid[0]);
+            const amount = parseFloat(bid[1]);
+            const usdValue = price * amount;
+            if (usdValue >= MIN_USD_VALUE) {
+              currentPricesCoinbase.push(price);
+              rawLargeOrdersCoinbase[price.toString()] = { side: 'bid', price, amount, value: usdValue };
+            }
+          }
+
+          for (const ask of limitedAsks) {
+            const price = parseFloat(ask[0]);
+            const amount = parseFloat(ask[1]);
+            const usdValue = price * amount;
+            if (usdValue >= MIN_USD_VALUE) {
+              currentPricesCoinbase.push(price);
+              rawLargeOrdersCoinbase[price.toString()] = { side: 'ask', price, amount, value: usdValue };
+            }
+          }
+
+          if (currentPricesCoinbase.length > 0) {
+            const placeholders = currentPricesCoinbase.map(() => '?').join(',');
+            await env.DB.prepare(`DELETE FROM active_orders_coinbase WHERE price NOT IN (${placeholders})`).bind(...currentPricesCoinbase).run();
+          } else {
+            await env.DB.prepare(`DELETE FROM active_orders_coinbase`).run();
+          }
+
+          for (const priceStr in rawLargeOrdersCoinbase) {
+            const order = rawLargeOrdersCoinbase[priceStr];
+            const priceFloat = parseFloat(priceStr);
+            const existing = await env.DB.prepare(`SELECT first_seen FROM active_orders_coinbase WHERE price = ?`).bind(priceFloat).first();
+            const firstSeen = existing ? existing.first_seen : now;
+
+            await env.DB.prepare(`
+              INSERT OR REPLACE INTO active_orders_coinbase (price, side, amount, value, first_seen, last_seen) 
+              VALUES (?, ?, ?, ?, ?, ?)
+            `).bind(priceFloat, order.side, order.amount, order.value, firstSeen, now).run();
+          }
         }
       }
 
-      // 3. Database Sync na Kuhifadhi kwenye Cloudflare D1
-      if (currentPrices.length > 0) {
-        const placeholders = currentPrices.map(() => '?').join(',');
-        await env.DB.prepare(`DELETE FROM active_orders WHERE price NOT IN (${placeholders})`).bind(...currentPrices).run();
-      } else {
-        await env.DB.prepare(`DELETE FROM active_orders`).run();
-      }
-
-      for (const priceStr in rawLargeOrders) {
-        const order = rawLargeOrders[priceStr];
-        const priceFloat = parseFloat(priceStr);
-
-        // Angalia kama bei ilikuwepo ili kuhifadhi 'first_seen' yake ya asili
-        const existing = await env.DB.prepare(`SELECT first_seen FROM active_orders WHERE price = ?`).bind(priceFloat).first();
-        const firstSeen = existing ? existing.first_seen : now;
-
-        await env.DB.prepare(`
-          INSERT OR REPLACE INTO active_orders (price, side, amount, value, first_seen, last_seen) 
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).bind(priceFloat, order.side, order.amount, order.value, firstSeen, now).run();
-      }
-
-      // Function ya format USD ($1.55M, $450K, $300K)
+      // 3. FUNCTION YA FORMAT USD
       function formatUsdValue(val) {
         if (val >= 1000000) {
           return '$' + (val / 1000000).toFixed(2) + 'M';
@@ -120,42 +162,58 @@ export default {
         return '$' + val.toFixed(2);
       }
 
-      // 4. Tengeneza Output
-      const { results: activeDbOrders } = await env.DB.prepare(`SELECT * FROM active_orders ORDER BY price DESC`).all();
+      // 4. KUCHUKUA NA KUPANGA DATA KUTOKA KWENYE DATABASE ZOTE MBILI
+      const { results: okxRows } = await env.DB.prepare(`SELECT * FROM active_orders_okx ORDER BY price DESC`).all();
+      const { results: coinbaseRows } = await env.DB.prepare(`SELECT * FROM active_orders_coinbase ORDER BY price DESC`).all();
 
-      const bids = [];
-      const asks = [];
+      const formatOrders = (rows, exchangeName) => {
+        const bids = [];
+        const asks = [];
 
-      for (const row of activeDbOrders) {
-        const durationSeconds = now - row.first_seen;
-        const durationMinutes = Math.round((durationSeconds / 60) * 10) / 10;
-        const firstSeenIso = new Date(row.first_seen * 1000).toISOString();
+        for (const row of rows) {
+          const durationSeconds = now - row.first_seen;
+          const durationMinutes = Math.round((durationSeconds / 60) * 10) / 10;
+          const firstSeenIso = new Date(row.first_seen * 1000).toISOString();
 
-        const formattedOrder = {
-          id: row.side + "-" + row.price,
-          type: row.side,
-          price: row.price,
-          amount: row.amount,
-          value: row.value,
-          value_formatted: formatUsdValue(row.value),
-          duration_minutes: durationMinutes,
-          first_seen_iso: firstSeenIso
-        };
+          const formattedOrder = {
+            id: row.side + "-" + row.price,
+            exchange: exchangeName,
+            type: row.side,
+            price: row.price,
+            amount: row.amount,
+            value: row.value,
+            value_formatted: formatUsdValue(row.value),
+            duration_minutes: durationMinutes,
+            first_seen_iso: firstSeenIso
+          };
 
-        if (row.side === 'bid') {
-          bids.push(formattedOrder);
-        } else {
-          asks.push(formattedOrder);
+          if (row.side === 'bid') {
+            bids.push(formattedOrder);
+          } else {
+            asks.push(formattedOrder);
+          }
         }
-      }
+        return { bids, asks };
+      };
+
+      const okxFormatted = formatOrders(okxRows, "OKX");
+      const coinbaseFormatted = formatOrders(coinbaseRows, "Coinbase");
 
       const output = {
         status: "success",
         timestamp: new Date().toISOString(),
-        bids_count: bids.length,
-        asks_count: asks.length,
-        bids: bids,
-        asks: asks
+        okx: {
+          bids_count: okxFormatted.bids.length,
+          asks_count: okxFormatted.asks.length,
+          bids: okxFormatted.bids,
+          asks: okxFormatted.asks
+        },
+        coinbase: {
+          bids_count: coinbaseFormatted.bids.length,
+          asks_count: coinbaseFormatted.asks.length,
+          bids: coinbaseFormatted.bids,
+          asks: coinbaseFormatted.asks
+        }
       };
 
       return new Response(JSON.stringify(output, null, 2), {

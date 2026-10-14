@@ -51,7 +51,8 @@ export default {
 
           const limitedBids = rawBids.slice(0, LIMIT_PER_SIDE);
           const limitedAsks = rawAsks.slice(0, LIMIT_PER_SIDE);
-          const currentPricesOkx = [];
+          
+          const validPricesOkx = [];
           const rawLargeOrdersOkx = {};
           const CONTRACT_SIZE = 1000; // Mkataba 1 wa DOGE-USDT-SWAP OKX = 1000 DOGE
 
@@ -59,8 +60,10 @@ export default {
             const price = parseFloat(bid[0]);
             const amount = parseFloat(bid[1]) * CONTRACT_SIZE;
             const usdValue = price * amount;
+            
+            // Tunachukua bei zote zilizofikisha $300K+ ili kuzihifadhi/kusasisha
             if (usdValue >= MIN_USD_VALUE) {
-              currentPricesOkx.push(price);
+              validPricesOkx.push(price);
               rawLargeOrdersOkx[price.toString()] = { side: 'bid', price, amount, value: usdValue };
             }
           }
@@ -69,15 +72,17 @@ export default {
             const price = parseFloat(ask[0]);
             const amount = parseFloat(ask[1]) * CONTRACT_SIZE;
             const usdValue = price * amount;
+            
             if (usdValue >= MIN_USD_VALUE) {
-              currentPricesOkx.push(price);
+              validPricesOkx.push(price);
               rawLargeOrdersOkx[price.toString()] = { side: 'ask', price, amount, value: usdValue };
             }
           }
 
-          if (currentPricesOkx.length > 0) {
-            const placeholders = currentPricesOkx.map(() => '?').join(',');
-            await env.DB.prepare(`DELETE FROM active_orders_okx WHERE price NOT IN (${placeholders})`).bind(...currentPricesOkx).run();
+          // FUTA ODA ZOTE AMBAZO HAZIPO TENA AU ZIMESHUKA CHINI YA $300K KWENYE EXCHANGE
+          if (validPricesOkx.length > 0) {
+            const placeholders = validPricesOkx.map(() => '?').join(',');
+            await env.DB.prepare(`DELETE FROM active_orders_okx WHERE price NOT IN (${placeholders})`).bind(...validPricesOkx).run();
           } else {
             await env.DB.prepare(`DELETE FROM active_orders_okx`).run();
           }
@@ -108,15 +113,17 @@ export default {
 
           const limitedBids = rawBids.slice(0, LIMIT_PER_SIDE);
           const limitedAsks = rawAsks.slice(0, LIMIT_PER_SIDE);
-          const currentPricesCoinbase = [];
+          
+          const validPricesCoinbase = [];
           const rawLargeOrdersCoinbase = {};
 
           for (const bid of limitedBids) {
             const price = parseFloat(bid[0]);
             const amount = parseFloat(bid[1]);
             const usdValue = price * amount;
+            
             if (usdValue >= MIN_USD_VALUE) {
-              currentPricesCoinbase.push(price);
+              validPricesCoinbase.push(price);
               rawLargeOrdersCoinbase[price.toString()] = { side: 'bid', price, amount, value: usdValue };
             }
           }
@@ -125,15 +132,17 @@ export default {
             const price = parseFloat(ask[0]);
             const amount = parseFloat(ask[1]);
             const usdValue = price * amount;
+            
             if (usdValue >= MIN_USD_VALUE) {
-              currentPricesCoinbase.push(price);
+              validPricesCoinbase.push(price);
               rawLargeOrdersCoinbase[price.toString()] = { side: 'ask', price, amount, value: usdValue };
             }
           }
 
-          if (currentPricesCoinbase.length > 0) {
-            const placeholders = currentPricesCoinbase.map(() => '?').join(',');
-            await env.DB.prepare(`DELETE FROM active_orders_coinbase WHERE price NOT IN (${placeholders})`).bind(...currentPricesCoinbase).run();
+          // FUTA ODA ZOTE AMBAZO HAZIPO TENA AU ZIMESHUKA CHINI YA $300K KWENYE EXCHANGE
+          if (validPricesCoinbase.length > 0) {
+            const placeholders = validPricesCoinbase.map(() => '?').join(',');
+            await env.DB.prepare(`DELETE FROM active_orders_coinbase WHERE price NOT IN (${placeholders})`).bind(...validPricesCoinbase).run();
           } else {
             await env.DB.prepare(`DELETE FROM active_orders_coinbase`).run();
           }

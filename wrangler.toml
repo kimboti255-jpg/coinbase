@@ -1,0 +1,9 @@
+name = "coinbase"
+main = "coinbase.js" # Hakikisha hapa inaendana na jina la faili lako la JavaScript (mfano: index.js au src/index.js)
+compatibility_date = "2026-10-14"
+
+# Sehemu hii inaunganisha msimbo wako na Database ya D1
+[[d1_databases]]
+binding = "DB" # Hili lisibadilike, ndilo linalotumika kwenye env.DB
+database_name = "datazi" # Jina la database yako mpya
+database_id = "fe016bf6-75cb-4dc1-8d2d-514d4857bd1f" # Paste ile ID uliyocopia kule Cloudflare

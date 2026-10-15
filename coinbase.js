@@ -35,7 +35,7 @@ export default {
         fetch(coinbaseUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (PHP-Coinbase-Tracker)', 'Accept': 'application/json' } })
       ]);
 
-      const MIN_USD_VALUE = 300000; // Filter ya $300K+
+      const MIN_USD_VALUE = 100000; // Filter ya $300K+
       const LIMIT_PER_SIDE = 5000;  // LIMIT YA ODA 5000
 
       // --- PROCESS OKX DATA ---

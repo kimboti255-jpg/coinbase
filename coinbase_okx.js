@@ -128,15 +128,12 @@ export default {
             const firstSeenIso = new Date(row.first_seen * 1000).toISOString();
 
             const formattedOrder = {
-              id: row.side + "-" + row.price,
               exchange: exchangeName,
               type: row.side,
               price: row.price,
               amount: row.amount,
               value: row.value,
-              value_formatted: formatUsdValue(row.value),
-              duration_minutes: durationMinutes,
-              first_seen_iso: firstSeenIso
+              value_formatted: formatUsdValue(row.value)
             };
 
             if (row.side === 'bid') {

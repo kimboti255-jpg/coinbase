@@ -39,7 +39,7 @@ export class WhaleTrackerDO {
 
   async fetchWhaleOrdersData() {
     const now = Math.floor(Date.now() / 1000);
-    const okxUrl = "https://www.okx.com/api/v5/market/books?instId=BTC-USDT&sz=5000";
+    const okxUrl = "https://www.okx.com/api/v5/market/books-full?instId=BTC-USDT&sz=5000";
     const coinbaseUrl = "https://api.exchange.coinbase.com/products/BTC-USD/book?level=2";
 
     const [okxRes, coinbaseRes] = await Promise.all([

@@ -7,13 +7,3 @@ compatibility_date = "2026-10-14"
 binding = "DB" # Hili lisibadilike, ndilo linalotumika kwenye env.DB
 database_name = "datazi" # Jina la database yako
 database_id = "fe016bf6-75cb-4dc1-8d2d-514d4857bd1f" # ID ya Database yako ya Cloudflare
-
-# 2. Sehemu hii inaweka Durable Objects kwa ajili ya kusimamia WebSocket ya muda mrefu
-[durable_objects]
-bindings = [
-  { name = "WHALE_TRACKER", class_name = "WhaleTrackerDO" }
-]
-
-[[migrations]]
-tag = "v1"
-new_classes = ["WhaleTrackerDO"]
